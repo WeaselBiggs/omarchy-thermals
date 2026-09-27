@@ -1,0 +1,107 @@
+{
+  "schemaVersion": 1,
+  "id": "dan.thermals",
+  "name": "Thermals",
+  "version": "0.1.0",
+  "author": "Forsythe McSquiddington",
+  "license": "MIT",
+  "description": "Thermals — system temperatures in the Omarchy bar: CPU, GPU, drives, RAM and fans straight from hwmon, with a panel listing every probe.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "activation": "on-demand",
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Thermals",
+    "description": "A thermometer with one temperature beside it in the bar, and a panel with every temperature and fan the kernel exposes, grouped by what they measure.",
+    "category": "System",
+    "aliases": [
+      "thermals",
+      "temps",
+      "temperature",
+      "sensors",
+      "fans"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "center",
+    "defaults": {
+      "refreshIntervalSec": 3,
+      "barSensor": "CPU",
+      "unit": "°C",
+      "showLabel": true,
+      "showAll": false,
+      "warnAt": 0,
+      "hotAt": 0
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 1,
+        "max": 60,
+        "step": 1,
+        "defaultValue": 3
+      },
+      {
+        "key": "barSensor",
+        "type": "enum",
+        "label": "Temperature shown in the bar",
+        "options": [
+          "CPU",
+          "GPU",
+          "Storage",
+          "Hottest"
+        ],
+        "defaultValue": "CPU",
+        "description": "Which reading sits beside the thermometer. Falls back to the hottest probe when the chosen kind is not present."
+      },
+      {
+        "key": "unit",
+        "type": "enum",
+        "label": "Unit",
+        "options": [
+          "°C",
+          "°F"
+        ],
+        "defaultValue": "°C"
+      },
+      {
+        "key": "showLabel",
+        "type": "boolean",
+        "label": "Show the temperature next to the icon",
+        "defaultValue": true,
+        "description": "Off leaves just the thermometer, which still changes colour when something runs hot."
+      },
+      {
+        "key": "showAll",
+        "type": "boolean",
+        "label": "List every probe",
+        "defaultValue": false,
+        "description": "Adds per-core, per-drive-sensor and ACPI zone readings that normally duplicate a better-labelled row."
+      },
+      {
+        "key": "warnAt",
+        "type": "integer",
+        "label": "Warm threshold (°C, 0 = per sensor)",
+        "min": 0,
+        "max": 120,
+        "step": 1,
+        "defaultValue": 0,
+        "description": "Overrides every sensor's own warm threshold. Leave at 0 to use what the driver reports, or a sensible default per kind when it reports nothing."
+      },
+      {
+        "key": "hotAt",
+        "type": "integer",
+        "label": "Hot threshold (°C, 0 = per sensor)",
+        "min": 0,
+        "max": 130,
+        "step": 1,
+        "defaultValue": 0,
+        "description": "Overrides every sensor's own hot threshold; the bar icon turns urgent past it."
+      }
+    ]
+  }
+}

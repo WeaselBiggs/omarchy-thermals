@@ -1,0 +1,332 @@
+#!/usr/bin/env python3
+"""Read every temperature and fan the kernel's hwmon tree exposes and print one
+JSON record per line.
+
+Run once it prints a single record and exits. With --watch N it stays up and
+prints a fresh record every N seconds, which is how the panel drives it: one
+long-lived process, no fork per tick.
+
+Standard library only. Nothing here needs lm_sensors or root.
+"""
+
+import argparse
+import glob
+import json
+import os
+import re
+import sys
+import time
+
+HWMON = "/sys/class/hwmon"
+
+# Order the panel lists groups in, and the fallback thresholds (warn, hot) in
+# degrees C for sensors whose driver publishes neither max nor crit.
+GROUPS = [
+    ("cpu", "Processor", (85, 95)),
+    ("gpu", "Graphics", (90, 100)),
+    ("storage", "Storage", (70, 80)),
+    ("memory", "Memory", (60, 80)),
+    ("wireless", "Wireless", (80, 95)),
+    ("board", "Board", (70, 85)),
+    ("power", "Power", (50, 60)),
+    ("other", "Other", (80, 95)),
+]
+GROUP_INDEX = {key: i for i, (key, _, _) in enumerate(GROUPS)}
+GROUP_TITLES = {key: title for key, title, _ in GROUPS}
+GROUP_DEFAULTS = {key: defaults for key, _, defaults in GROUPS}
+
+# Chips whose readings duplicate a better-labelled sensor elsewhere. Hidden
+# unless --all, or unless they are the only temperatures the machine has.
+DUPLICATE_CHIPS = {"acpitz", "pch_cannonlake", "pch_skylake", "pch_cometlake"}
+
+# Chip name (prefix match, lower-case) -> group.
+CHIP_GROUPS = [
+    ("k10temp", "cpu"), ("zenpower", "cpu"), ("coretemp", "cpu"), ("cpu_thermal", "cpu"),
+    ("soc_dts", "cpu"), ("x86_pkg_temp", "cpu"), ("thinkpad", "board"),
+    ("amdgpu", "gpu"), ("radeon", "gpu"), ("nouveau", "gpu"), ("i915", "gpu"), ("xe", "gpu"),
+    ("nvidia", "gpu"),
+    ("nvme", "storage"), ("drivetemp", "storage"),
+    ("spd5118", "memory"), ("jc42", "memory"), ("ee1004", "memory"),
+    ("iwlwifi", "wireless"), ("mt79", "wireless"), ("mt76", "wireless"), ("ath1", "wireless"),
+    ("ath9k", "wireless"), ("rtw", "wireless"), ("brcm", "wireless"), ("wifi", "wireless"),
+    ("cros_ec", "board"), ("asus", "board"), ("nct", "board"), ("it87", "board"),
+    ("dell_smm", "board"), ("applesmc", "board"),
+    ("bat", "power"), ("ucsi", "power"), ("acad", "power"),
+]
+
+
+def read(path):
+    try:
+        with open(path) as handle:
+            return handle.read().strip()
+    except OSError:
+        return None
+
+
+def read_milli(path):
+    value = read(path)
+    if value is None or value == "":
+        return None
+    try:
+        return int(value) / 1000.0
+    except ValueError:
+        return None
+
+
+def read_int(path):
+    value = read(path)
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def sane_threshold(value):
+    """hwmon publishes garbage thresholds for sensors it has none for (an NVMe
+    reporting max=65261 C, for instance). Keep only what could be a real limit."""
+    if value is None:
+        return None
+    return value if 30 <= value <= 150 else None
+
+
+def group_for(chip):
+    lowered = chip.lower()
+    for prefix, group in CHIP_GROUPS:
+        if lowered.startswith(prefix):
+            return group
+    return "other"
+
+
+def device_model(hwmon_dir):
+    for name in ("device/model", "device/name", "device/product"):
+        value = read(os.path.join(hwmon_dir, name))
+        if value:
+            return re.sub(r"\s+", " ", value)
+    return ""
+
+
+def tidy(label):
+    """Human form of a raw hwmon label."""
+    text = str(label or "")
+    text = re.sub(r"@[0-9a-f]+$", "", text)            # cpu@4c
+    text = re.sub(r"_f\d{5}$", "", text)                # local_f75303
+    text = text.replace("_", " ").strip()
+    if text.lower() in ("cpu", "ddr", "gpu", "soc", "ssd", "vrm", "pch"):
+        return text.upper()
+    return text[:1].upper() + text[1:] if text else text
+
+
+def friendly_label(chip, group, raw, index, model, chip_count, chip_ordinal):
+    """What the row is called. Kept short: the chip and raw label ride along
+    in the record for the tooltip."""
+    lower = chip.lower()
+    raw_lower = (raw or "").lower()
+    if group == "cpu":
+        if raw_lower in ("tctl", "package id 0", "", "tdie", "cpu"):
+            return "CPU"
+        if raw_lower.startswith("tccd"):
+            return "CPU CCD " + raw[4:]
+        if raw_lower.startswith("core "):
+            return "Core " + raw[5:]
+        return "CPU " + tidy(raw)
+    if group == "gpu":
+        if raw_lower in ("edge", "", "gpu"):
+            return "GPU"
+        if raw_lower == "junction":
+            return "GPU hotspot"
+        if raw_lower == "mem":
+            return "GPU memory"
+        return "GPU " + tidy(raw)
+    if group == "storage":
+        base = "NVMe" if lower.startswith("nvme") else "Disk"
+        suffix = "" if chip_count == 1 else " " + str(chip_ordinal + 1)
+        if raw_lower in ("composite", ""):
+            return base + suffix
+        return base + suffix + " " + tidy(raw)
+    if group == "memory":
+        return "RAM " + ("ABCDEFGH"[chip_ordinal] if chip_ordinal < 8 else str(chip_ordinal + 1))
+    if group == "wireless":
+        return "Wi-Fi" if raw_lower in ("", "temp1") else "Wi-Fi " + tidy(raw)
+    if group == "board":
+        if lower.startswith("cros_ec"):
+            name = tidy(raw) or "Sensor " + str(index)
+            if name.lower() == "local":
+                name = "Board"
+            return name + " (EC)"
+        return tidy(raw) or chip
+    if group == "power":
+        if lower.startswith("bat"):
+            return "Battery"
+        return tidy(raw) or chip
+    if raw:
+        return tidy(raw)
+    return chip if index == 1 else chip + " " + str(index)
+
+
+def dedupe_labels(rows):
+    """Two probes with the same friendly name get numbered so rows stay
+    tellable apart: the Framework EC reports two CPU probes, for instance."""
+    counts = {}
+    for row in rows:
+        counts[row["label"]] = counts.get(row["label"], 0) + 1
+    seen = {}
+    for row in rows:
+        label = row["label"]
+        if counts[label] < 2:
+            continue
+        seen[label] = seen.get(label, 0) + 1
+        match = re.match(r"^(.*?)(\s\(.*\))?$", label)
+        base, suffix = match.group(1), match.group(2) or ""
+        row["label"] = base + " " + str(seen[label]) + suffix
+
+
+def collect(show_all):
+    sensors = []
+    fans = []
+    hidden = 0
+    chips = []
+
+    for hwmon_dir in sorted(glob.glob(os.path.join(HWMON, "hwmon*")),
+                            key=lambda p: int(re.sub(r"\D", "", os.path.basename(p)) or 0)):
+        chip = read(os.path.join(hwmon_dir, "name")) or os.path.basename(hwmon_dir)
+        temps = sorted(glob.glob(os.path.join(hwmon_dir, "temp*_input")),
+                       key=lambda p: int(re.sub(r"\D", "", os.path.basename(p)) or 0))
+        fan_inputs = sorted(glob.glob(os.path.join(hwmon_dir, "fan*_input")))
+        if not temps and not fan_inputs:
+            continue
+        chips.append((hwmon_dir, chip, temps, fan_inputs))
+
+    # Ordinal of each chip among chips with the same name, so two DIMMs become
+    # RAM A and RAM B and two NVMe drives NVMe 1 and NVMe 2.
+    names = [c[1].lower() for c in chips]
+    ordinals = {}
+    seen = {}
+    for i, name in enumerate(names):
+        ordinals[i] = seen.get(name, 0)
+        seen[name] = ordinals[i] + 1
+
+    has_named_temps = any(
+        temps and c[1].lower() not in DUPLICATE_CHIPS for c, temps in ((c, c[2]) for c in chips)
+    )
+    fan_chips = [c for c in chips if c[3]]
+    # acpi_fan is the firmware's abstraction of a fan another driver already
+    # reads directly; on most laptops it reports 0 or a coarse level.
+    drop_acpi_fan = any(c[1].lower() != "acpi_fan" for c in fan_chips)
+
+    for i, (hwmon_dir, chip, temps, fan_inputs) in enumerate(chips):
+        lower = chip.lower()
+        group = group_for(chip)
+        model = device_model(hwmon_dir) if group == "storage" else ""
+        chip_count = seen[lower]
+        duplicate_chip = lower in DUPLICATE_CHIPS and has_named_temps and not show_all
+
+        for path in temps:
+            index = int(re.sub(r"\D", "", os.path.basename(path)) or 0)
+            stem = path[: -len("_input")]
+            raw = read(stem + "_label") or ""
+            celsius = read_milli(path)
+            if celsius is None:
+                continue
+            raw_lower = raw.lower()
+            secondary = (
+                (group == "storage" and raw_lower.startswith("sensor "))
+                or (group == "cpu" and raw_lower.startswith("core "))
+                or (group == "cpu" and raw_lower.startswith("tccd"))
+            )
+            if duplicate_chip or (secondary and not show_all):
+                hidden += 1
+                continue
+            crit = sane_threshold(read_milli(stem + "_crit"))
+            maximum = sane_threshold(read_milli(stem + "_max"))
+            emergency = sane_threshold(read_milli(stem + "_emergency"))
+            warn = maximum if maximum is not None else (crit if crit is not None else None)
+            hot = crit if crit is not None else (emergency if emergency is not None else None)
+            source = "hwmon"
+            if warn is None and hot is None:
+                warn, hot = GROUP_DEFAULTS[group]
+                source = "default"
+            elif warn is None:
+                warn = max(30, hot - 10)
+            elif hot is None:
+                hot = warn + 10
+            if warn >= hot:
+                warn = max(30, hot - 5)
+            label = friendly_label(chip, group, raw, index, model, chip_count, ordinals[i])
+            sensors.append({
+                "id": os.path.basename(hwmon_dir) + "/" + os.path.basename(stem),
+                "chip": chip,
+                "group": group,
+                "groupTitle": GROUP_TITLES[group],
+                "order": GROUP_INDEX[group],
+                "label": label,
+                "raw": raw,
+                "model": model,
+                "c": round(celsius, 1),
+                "warn": round(warn, 1),
+                "hot": round(hot, 1),
+                "thresholdSource": source,
+                "path": path,
+            })
+
+        for path in fan_inputs:
+            if lower == "acpi_fan" and drop_acpi_fan and not show_all:
+                hidden += 1
+                continue
+            index = int(re.sub(r"\D", "", os.path.basename(path)) or 0)
+            stem = path[: -len("_input")]
+            rpm = read_int(path)
+            if rpm is None:
+                continue
+            raw = read(stem + "_label") or ""
+            fan_count = sum(len(c[3]) for c in fan_chips if not (c[1].lower() == "acpi_fan" and drop_acpi_fan))
+            label = tidy(raw) if raw else ("Fan" if fan_count <= 1 else "Fan " + str(len(fans) + 1))
+            fans.append({
+                "id": os.path.basename(hwmon_dir) + "/" + os.path.basename(stem),
+                "chip": chip,
+                "label": label,
+                "rpm": rpm,
+                "target": read_int(stem + "_target"),
+                "max": read_int(stem + "_max"),
+                "fault": (read_int(stem + "_fault") or 0) != 0,
+                "path": path,
+            })
+
+    sensors.sort(key=lambda s: (s["order"], s["chip"].lower(), s["id"]))
+    dedupe_labels(sensors)
+    dedupe_labels(fans)
+
+    return {
+        "updatedAtMs": int(time.time() * 1000),
+        "sensors": sensors,
+        "fans": fans,
+        "hidden": hidden,
+        "source": "hwmon",
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--watch", type=float, default=0,
+                        help="keep running and print a record every N seconds")
+    parser.add_argument("--all", action="store_true",
+                        help="include duplicate ACPI zones, per-core and per-sensor readings")
+    parser.add_argument("--pretty", action="store_true", help="indent the JSON")
+    args = parser.parse_args()
+
+    indent = 2 if args.pretty else None
+    while True:
+        record = collect(args.all)
+        try:
+            sys.stdout.write(json.dumps(record, indent=indent, separators=None if indent else (",", ":")) + "\n")
+            sys.stdout.flush()
+        except BrokenPipeError:
+            return 0
+        if args.watch <= 0:
+            return 0
+        time.sleep(max(0.5, args.watch))
+
+
+if __name__ == "__main__":
+    sys.exit(main() or 0)
