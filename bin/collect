@@ -27,6 +27,7 @@ GROUPS = [
     ("storage", "Storage", (70, 80)),
     ("memory", "Memory", (60, 80)),
     ("wireless", "Wireless", (80, 95)),
+    ("network", "Network", (90, 110)),
     ("board", "Board", (70, 85)),
     ("power", "Power", (50, 60)),
     ("other", "Other", (80, 95)),
@@ -49,6 +50,9 @@ CHIP_GROUPS = [
     ("spd5118", "memory"), ("jc42", "memory"), ("ee1004", "memory"),
     ("iwlwifi", "wireless"), ("mt79", "wireless"), ("mt76", "wireless"), ("ath1", "wireless"),
     ("ath9k", "wireless"), ("rtw", "wireless"), ("brcm", "wireless"), ("wifi", "wireless"),
+    ("r8169", "network"), ("r8125", "network"), ("igc", "network"), ("igb", "network"),
+    ("e1000", "network"), ("ixgbe", "network"), ("i40e", "network"), ("mlx", "network"),
+    ("atlantic", "network"), ("aqc", "network"), ("tg3", "network"), ("bnx", "network"),
     ("cros_ec", "board"), ("asus", "board"), ("nct", "board"), ("it87", "board"),
     ("dell_smm", "board"), ("applesmc", "board"),
     ("bat", "power"), ("ucsi", "power"), ("acad", "power"),
@@ -118,6 +122,15 @@ def tidy(label):
     return text[:1].upper() + text[1:] if text else text
 
 
+def tidy_chip(chip):
+    """A chip name fit for a row. Drivers that register one hwmon per device
+    tack the bus address on: r8169_0_700:00 is the Realtek NIC's PHY on PCI
+    07:00.0, nvme0 is the first NVMe. Drop the address, keep the driver."""
+    text = re.sub(r"_\d+_[0-9a-f]+:[0-9a-f]+$", "", chip)  # r8169_0_700:00
+    text = re.sub(r"[-_][0-9a-f]+(:[0-9a-f]+)+(\.[0-9a-f]+)?$", "", text)  # foo-0000:07:00.0
+    return tidy(text) or chip
+
+
 def friendly_label(chip, group, raw, index, model, chip_count, chip_ordinal):
     """What the row is called. Kept short: the chip and raw label ride along
     in the record for the tooltip."""
@@ -149,6 +162,11 @@ def friendly_label(chip, group, raw, index, model, chip_count, chip_ordinal):
         return "RAM " + ("ABCDEFGH"[chip_ordinal] if chip_ordinal < 8 else str(chip_ordinal + 1))
     if group == "wireless":
         return "Wi-Fi" if raw_lower in ("", "temp1") else "Wi-Fi " + tidy(raw)
+    if group == "network":
+        suffix = "" if chip_count == 1 else " " + str(chip_ordinal + 1)
+        if raw_lower in ("", "temp1", "phy"):
+            return "Ethernet" + suffix
+        return "Ethernet" + suffix + " " + tidy(raw)
     if group == "board":
         if lower.startswith("cros_ec"):
             name = tidy(raw) or "Sensor " + str(index)
@@ -162,7 +180,8 @@ def friendly_label(chip, group, raw, index, model, chip_count, chip_ordinal):
         return tidy(raw) or chip
     if raw:
         return tidy(raw)
-    return chip if index == 1 else chip + " " + str(index)
+    name = tidy_chip(chip)
+    return name if index == 1 else name + " " + str(index)
 
 
 def dedupe_labels(rows):

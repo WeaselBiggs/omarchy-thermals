@@ -31,7 +31,7 @@ one-line summary. Left = panel, right = `btop`, middle = restart the collector.
 - **Hero** — the chosen reading as a pill, then which probe it is, the
   hottest probe when that is a different one, and the fan state.
 - **One section per group** — Processor, Graphics, Storage, Memory, Wireless,
-  Board, Power, Other. Each row has a meter behind it that fills as the probe
+  Network, Board, Power, Other. Each row has a meter behind it that fills as the probe
   approaches its hot threshold; warm rows go bold, hot rows go urgent. Hover
   for the driver, raw label and thresholds. Click (or Enter) unfolds where the
   number comes from, including the sysfs path.
@@ -61,8 +61,11 @@ quickest way to see what a machine exposes.
 Rows are labelled from the driver name and the raw label: `k10temp` Tctl is
 "CPU", `amdgpu` edge is "GPU", an NVMe's Composite reading is "NVMe" (with the
 drive model in the tooltip), `spd5118` DIMMs become "RAM A" and "RAM B", the
-Framework/Chromebook embedded controller's probes carry an "(EC)" suffix.
-Anything unrecognised keeps its raw name under Other.
+Framework/Chromebook embedded controller's probes carry an "(EC)" suffix, a
+wired NIC's PHY probe (`r8169`, `igc`, `e1000e` and friends) is "Ethernet"
+under Network. Anything unrecognised lands under Other with the driver name,
+minus any bus address the kernel tacked on (`r8169_0_700:00` reads as
+"R8169").
 
 Thresholds: the driver's `max` is "warm" and `crit` is "hot" when it publishes
 them (garbage values, such as an NVMe's 65261 °C, are ignored). Drivers that
