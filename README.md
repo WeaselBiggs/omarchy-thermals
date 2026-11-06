@@ -106,3 +106,11 @@ Saving a file here logs "Local plugin changed, reloading", but QML edits only
 take effect after `omarchy restart shell` on Quickshell builds without
 `Qt.clearComponentCache`. The collector picks up edits when it is restarted
 (middle-click the icon, or `r` in the panel).
+
+## Related plugins
+
+More of the same for the Omarchy shell, each installed with `omarchy plugin add <url> --enable`:
+
+- [omarchy-dock](https://github.com/WeaselBiggs/omarchy-dock) — the stock dock with an accent line under each icon whose app has a window open.
+- [omarchy-vapour](https://github.com/WeaselBiggs/omarchy-vapour) — playtime for Steam, Battle.net and anything else that opens a window, in the bar.
+- [omarchy-thunderclock](https://github.com/WeaselBiggs/omarchy-thunderclock) — the stock clock with Thunderbird calendar events marked on the calendar.
