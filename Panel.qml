@@ -230,15 +230,25 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     readonly property bool labelShown: thermals.setting("showLabel", true) !== false && !root.vertical && !!thermals.primary
-    text: labelShown
-      ? root.barGlyph + " " + thermals.formatTemp(thermals.primary.c, false)
-      : root.barGlyph
-    // An icon slot is a fixed 21px; with a temperature beside the glyph the
-    // text would overflow it on both sides and sit on top of the neighbours.
-    // Size the slot to the painted text plus a margin each side instead.
+    // The glyph goes in `text` on its own: since Omarchy 4.5 BarIconButton
+    // scales whatever is in `text` down to fit the icon box, so a glyph with
+    // the temperature appended shrank to a smudge. The reading rides in
+    // `labelText`, which keeps its font size, the way the battery widget
+    // shows its percentage.
+    text: root.barGlyph
+    labelText: labelShown ? thermals.formatTemp(thermals.primary.c, false) : ""
+    // A status slot is a fixed 21px; with a temperature beside the glyph the
+    // content would overflow it and sit on top of the neighbours. Size the
+    // slot to the icon box, the label and a margin each side instead.
     slotSize: labelShown
-      ? Math.ceil(button.glyphPaintedWidth) + Style.space(24)
+      ? Math.ceil(button.canvasSize + Style.space(4) + labelMetrics.advanceWidth) + Style.space(16)
       : Style.bar.statusSlot
+    TextMetrics {
+      id: labelMetrics
+      font.family: button.fontFamily
+      font.pixelSize: button.fontSize
+      text: button.labelText
+    }
     active: root.level >= 2
     tooltipText: root.opened ? "" : thermals.summary()
     onPressed: function(buttonCode) {
